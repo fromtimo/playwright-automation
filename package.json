@@ -1,0 +1,17 @@
+{
+  "name": "gemini-web-docs-translator",
+  "version": "1.0.4",
+  "description": "Free-ish Playwright automation for translating chunked scripts in Gemini web and creating Google Docs.",
+  "main": "translator-gemini-web.js",
+  "type": "module",
+  "scripts": {
+    "start": "node translator-gemini-web.js",
+    "gemini": "node translator-gemini-web.js",
+    "english": "node translator-chatgpt-english.js",
+    "count": "node count-source-chars.js",
+    "check": "node --check translator-gemini-web.js && node --check translator-chatgpt-english.js && node --check count-source-chars.js"
+  },
+  "dependencies": {
+    "playwright": "1.60.0-alpha-1778075025000"
+  }
+}

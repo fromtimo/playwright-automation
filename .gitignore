@@ -1,0 +1,13 @@
+node_modules/
+
+app-data/chrome-profile/
+app-data/output/
+
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+.env
+.env.*
