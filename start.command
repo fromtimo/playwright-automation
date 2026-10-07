@@ -53,9 +53,9 @@ print_menu() {
   print_header
   printf "${BOLD}Главное меню${RESET}\n"
   echo ""
-  echo "  1 перевод Gemini; 2 английский ChatGPT; 3 подсчёт символов"
+  echo "  1 перевод Gemini; 2 английский ChatGPT; 3 подсчёт символов; 4 Посчитать сокр."
   echo ""
-  printf "  ${RED}${BOLD}4 Выйти - Enter${RESET}\n"
+  printf "  ${RED}${BOLD}5 Выйти - Enter${RESET}\n"
   echo ""
   printf "${CYAN}Выбор:${RESET} "
 }
@@ -79,6 +79,9 @@ while true; do
       run_script "$PROJECT_DIR/commands/count.command" "Подсчёт символов"
       ;;
     "4")
+      run_script "$PROJECT_DIR/commands/short-counts.command" "Посчитать сокр."
+      ;;
+    "5")
       clear
       exit 0
       ;;

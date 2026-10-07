@@ -8,14 +8,17 @@ const PROFILE_DIR = path.resolve('app-data/chrome-profile');
 const OUTPUT_DIR = path.resolve('app-data/output');
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
-const CHATGPT_URL = 'https://chatgpt.com/g/g-p-6a234e2794608191abe426d6606bbdd6-perevody/project';
+const CHATGPT_URL = 'https://chatgpt.com/';
 const REQUEST_DELAY_MIN_MS = 2000;
 const REQUEST_DELAY_MAX_MS = 5000;
 const CHATGPT_NO_RESPONSE_RETRY_MS = 20000;
 const CHATGPT_MAX_SEND_ATTEMPTS = 4;
 const CHATGPT_STABLE_ROUNDS = 3;
 const CHATGPT_FORCE_STABLE_ROUNDS = 8;
-const ENGLISH_PROMPT = `Я хочу, чтобы ты перевёл сценарий на английский язык (американский), без транскрипции подходящий для дикторской озвучки. Перевод должен звучать просто, понятно и естественно для носителей языка. Можно немного менять слова и выражения, но не сильно, и только если это помогает сделать текст более лаконичным и правильным, но важно сохранить общий смысл`;
+const ENGLISH_PROMPT = `Я хочу, чтобы ты перевёл сценарий на английский ЯЗЫК, без транскрипции подходящий для дикторской озвучки. Перевод должен звучать просто, понятно и естественно для носителей языка. Можно немного менять слова и выражения, но не сильно, и только если это помогает сделать текст более лаконичным и правильным, но важно сохранить общий смысл.
+Только перевод без комментария. Обязательное условие: все цифры и числа (включая даты, цены, количество и порядковые номера) записывай исключительно прописью (словами на языке перевода), без использования арабских цифр.
+
+Мой текст:`;
 
 let lastChatGptSubmitAt = 0;
 let isShuttingDown = false;
@@ -44,6 +47,22 @@ function normalizeText(text) {
 
 function countChars(text) {
   return Array.from(normalizeText(text)).length;
+}
+
+function removeCyrillicText(text) {
+  return normalizeText(text)
+    .split('\n')
+    .map(line => line
+      .replace(/\p{Script=Cyrillic}+/gu, '')
+      .replace(/[ \t]+([,.;:!?])/g, '$1')
+      .replace(/([([{])\s+/g, '$1')
+      .replace(/\s+([)\]}])/g, '$1')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim())
+    .filter(line => line && /[A-Za-z0-9]/.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function randomInt(min, max) {
@@ -239,30 +258,8 @@ async function getChatGptComposerText(page) {
 }
 
 async function clickChatGptNewChat(page) {
-  const selectors = [
-    'a[href="/"]',
-    'a[aria-label*="New chat" i]',
-    'button[aria-label*="New chat" i]',
-    'a[aria-label*="Новый чат" i]',
-    'button[aria-label*="Новый чат" i]',
-    'a:has-text("New chat")',
-    'button:has-text("New chat")',
-    'a:has-text("Новый чат")',
-    'button:has-text("Новый чат")'
-  ];
-
-  for (const selector of selectors) {
-    const element = page.locator(selector).first();
-    if (await element.count().catch(() => 0)) {
-      if (await element.isVisible().catch(() => false)) {
-        await element.click().catch(() => {});
-        await page.waitForTimeout(1500);
-        return;
-      }
-    }
-  }
-
   await page.goto(CHATGPT_URL, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
+  await getChatGptInput(page, 60000);
   await page.waitForTimeout(1500);
 }
 
@@ -350,28 +347,106 @@ async function submitChatGptMessage(page) {
 
 async function getChatGptResponses(page) {
   return await page.evaluate(() => {
-    const selectors = [
+    const turnSelectors = [
       '[data-message-author-role="assistant"]',
-      '[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
-      'article:has([data-message-author-role="assistant"])'
+      '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+      '[data-testid^="conversation-turn-"]:has([data-testid*="assistant" i])',
+      'article:has([data-message-author-role="assistant"])',
+      'article:has([data-testid*="assistant" i])'
     ];
-
+    const contentSelectors = [
+      '[data-testid="chatgpt-writing-block"] [role="textbox"]',
+      '[data-testid="chatgpt-writing-block"] [class*="editor"]',
+      '[data-testid="chatgpt-writing-block"] [class*="content"]',
+      '[data-testid="chatgpt-writing-block"]',
+      '[data-message-author-role="assistant"] .markdown',
+      '[data-message-author-role="assistant"] [data-testid="markdown"]',
+      '[data-message-author-role="assistant"]',
+      '[class*="Markdown"]',
+      '.markdown',
+      '[data-testid="markdown"]',
+      '[class*="markdown"]'
+    ];
     const items = [];
     const seen = new Set();
 
-    for (const selector of selectors) {
-      for (const el of document.querySelectorAll(selector)) {
-        const rect = el.getBoundingClientRect();
-        const style = window.getComputedStyle(el);
-        if (rect.width === 0 || rect.height === 0 || style.visibility === 'hidden' || style.display === 'none') continue;
+    const isVisible = el => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
 
-        const text = (el.innerText || el.textContent || '').trim();
-        if (!text || text.length < 2) continue;
-        if (/^(you said|chatgpt said)$/i.test(text)) continue;
-        if (seen.has(text)) continue;
+    const cleanUiText = text => String(text || '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !/^(you said|chatgpt said|copy|копировать|good response|bad response|read aloud|regenerate|share)$/i.test(line))
+      .join('\n')
+      .trim();
 
-        seen.add(text);
-        items.push(text);
+    const getBestText = turn => {
+      for (const selector of contentSelectors) {
+        const nodes = turn.matches(selector) ? [turn] : Array.from(turn.querySelectorAll(selector));
+        const texts = nodes
+          .filter(isVisible)
+          .map(el => cleanUiText(el.innerText || el.textContent || ''))
+          .filter(text => text.length >= 2);
+
+        if (texts.length) return texts.join('\n\n').trim();
+      }
+
+      return cleanUiText(turn.innerText || turn.textContent || '');
+    };
+
+    const addText = text => {
+      const cleaned = cleanUiText(text);
+      if (!cleaned || cleaned.length < 2 || seen.has(cleaned)) return;
+
+      seen.add(cleaned);
+      items.push(cleaned);
+    };
+
+    for (const block of document.querySelectorAll('[data-testid="chatgpt-writing-block"]')) {
+      if (!isVisible(block)) continue;
+      addText(getBestText(block));
+    }
+
+    for (const heading of document.querySelectorAll('h4')) {
+      const headingText = cleanUiText(heading.innerText || heading.textContent || '');
+      if (!/^(chatgpt|assistant|чатgpt|чатджипити|chat gpt).*(said|сказал)|^chatgpt сказал:$/i.test(headingText)) continue;
+
+      let node = heading.parentElement;
+      for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+        if (!isVisible(node)) continue;
+
+        const text = getBestText(node)
+          .replace(new RegExp(`^${headingText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i'), '')
+          .trim();
+
+        if (text.length >= 20) {
+          addText(text);
+          break;
+        }
+      }
+    }
+
+    for (const selector of turnSelectors) {
+      for (const turn of document.querySelectorAll(selector)) {
+        if (!isVisible(turn)) continue;
+
+        const text = getBestText(turn);
+        addText(text);
+      }
+    }
+
+    if (!items.length) {
+      for (const el of document.querySelectorAll('.markdown, [data-testid="markdown"], [class*="markdown"], [class*="Markdown"], [data-testid="chatgpt-writing-block"]')) {
+        if (!isVisible(el)) continue;
+
+        const turn = el.closest('[data-message-author-role], [data-testid^="conversation-turn-"], article');
+        if (turn?.matches('[data-message-author-role="user"]') || turn?.querySelector('[data-message-author-role="user"]')) continue;
+
+        addText(getBestText(el));
       }
     }
 
@@ -412,6 +487,18 @@ async function waitUntilChatGptNotGenerating(page) {
   return true;
 }
 
+async function waitUntilChatGptReadyForNextMessage(page, timeout = 120000) {
+  const started = Date.now();
+
+  while (Date.now() - started < timeout) {
+    await getChatGptInput(page, 3000).catch(() => null);
+    if (await waitUntilChatGptNotGenerating(page)) return;
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error('ChatGPT всё ещё генерирует ответ. Не отправляю следующий текст, чтобы не сломать очередь.');
+}
+
 function cleanChatGptAnswer(text) {
   let out = normalizeText(text)
     .replace(/^```[a-zа-яё-]*\s*/i, '')
@@ -429,13 +516,6 @@ function cleanChatGptAnswer(text) {
   }
 
   return out;
-}
-
-async function sendChatGptTextOnce(page, text) {
-  await waitBeforeChatGptRequest(page);
-  await pasteTextIntoChatGpt(page, text);
-  await submitChatGptMessage(page);
-  lastChatGptSubmitAt = Date.now();
 }
 
 async function reloadChatGptChat(page) {
@@ -501,10 +581,15 @@ async function waitForChatGptAnswer(page, before, rl) {
 
 async function sendChatGptMessage(page, text, rl) {
   for (let attempt = 1; attempt <= CHATGPT_MAX_SEND_ATTEMPTS; attempt++) {
+    await waitBeforeChatGptRequest(page);
+    await waitUntilChatGptReadyForNextMessage(page);
+
     const before = await getChatGptResponseSnapshot(page);
 
     console.log(`Отправляю в ChatGPT, попытка ${attempt}/${CHATGPT_MAX_SEND_ATTEMPTS}...`);
-    await sendChatGptTextOnce(page, text);
+    await pasteTextIntoChatGpt(page, text);
+    await submitChatGptMessage(page);
+    lastChatGptSubmitAt = Date.now();
 
     const result = await waitForChatGptAnswer(page, before, rl);
     if (result.status === 'ok') return result.text;
@@ -520,7 +605,7 @@ function buildTranslatedDocument(parts, translatedParts) {
   const blocks = [];
 
   for (let i = 0; i < parts.length; i++) {
-    const translation = normalizeText(translatedParts[i]);
+    const translation = removeCyrillicText(translatedParts[i]);
     blocks.push(`${parts[i].number} ${parts[i].declaredCount}/${countChars(translation)}\n${translation}`);
   }
 
@@ -706,8 +791,9 @@ async function main() {
     for (const part of parts) {
       console.log(`Перевожу часть ${part.number}/${parts.length}...`);
       const translated = await sendChatGptMessage(chatPage, part.text, rl);
-      translatedParts.push(translated);
-      console.log(`Готово: ${countChars(translated)} символов`);
+      const cleanedTranslated = removeCyrillicText(translated);
+      translatedParts.push(cleanedTranslated);
+      console.log(`Готово: ${countChars(cleanedTranslated)} символов английского текста`);
     }
 
     const chatUrl = chatPage.url();

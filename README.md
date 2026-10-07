@@ -16,6 +16,7 @@
 - `npm run gemini` - перевод на выбранные языки через Gemini.
 - `npm run english` - английский перевод через ChatGPT.
 - `npm run count` - подсчет символов в частях исходного Google Docs.
+- `npm run short-counts` - сокращение заголовков вида `1 1041 806` до `1 806/`.
 - `npm run check` - быстрая проверка синтаксиса JS-файлов.
 
 На macOS можно запустить `start.command`: он открывает меню, проверяет Node.js/npm, поднимает Chrome с remote debugging и запускает нужный сценарий.
@@ -35,6 +36,7 @@
 translator-gemini-web.js       # основной сценарий перевода через Gemini
 translator-chatgpt-english.js  # английский перевод через ChatGPT
 count-source-chars.js          # подсчет символов в исходном документе
+shorten-counts.js              # сокращение двойных счетчиков в заголовках
 start.command                  # меню запуска для macOS
 commands/                      # shell-команды для отдельных режимов
 assets/notification/           # звук уведомления после завершения

@@ -44,8 +44,10 @@ const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 const GEMINI_BASE_URL = 'https://gemini.google.com/app';
 const GEMINI_REQUEST_DELAY_MIN_MS = 2000;
 const GEMINI_REQUEST_DELAY_MAX_MS = 5000;
-const GEMINI_NO_RESPONSE_RETRY_MS = 20000;
+const GEMINI_NO_RESPONSE_RETRY_MS = 40000;
 const GEMINI_MAX_SEND_ATTEMPTS = 4;
+const GEMINI_STABLE_ROUNDS = 4;
+const GEMINI_PARTS_PER_CHAT = 12;
 
 let lastGeminiSubmitAt = 0;
 let isShuttingDown = false;
@@ -75,6 +77,21 @@ function normalizeText(text) {
 
 function countChars(text) {
   return Array.from(normalizeText(text)).length;
+}
+
+function cleanTranslatedText(text) {
+  return normalizeText(text)
+    .split('\n')
+    .map(line => line
+      .replace(/[ \t]+([,.;:!?])/g, '$1')
+      .replace(/([([{])\s+/g, '$1')
+      .replace(/\s+([)\]}])/g, '$1')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim())
+    .filter(Boolean)
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function randomInt(min, max) {
@@ -141,7 +158,34 @@ function pushPart(part, parts) {
 }
 
 function buildPrompt(language) {
-  return `Я хочу, чтобы ты перевёл сценарий на ${language.promptName} язык, без транскрипции подходящий для дикторской озвучки. Перевод должен звучать просто, понятно и естественно для носителей языка. Можно немного менять слова и выражения, но не сильно, и только если это помогает сделать текст более лаконичным и правильным, но важно сохранить общий смысл`;
+  if (language.no === 18) {
+    return `Переведи следующий русский текст на японский язык без транскрипции.
+Требования к переводу:
+Перевод должен быть предназначен для дикторской озвучки.
+Текст должен звучать естественно, понятно и привычно для носителей языка.
+Можно немного менять порядок слов, грамматические конструкции и выражения, если это необходимо для естественности языка перевода.
+Нельзя добавлять новые предложения, факты, объяснения, выводы, комментарии, оценки или художественные описания, которых нет в оригинальном тексте.
+Нельзя расширять текст. Объём перевода должен соответствовать объёму оригинала.
+Каждое предложение оригинала должно иметь соответствующее предложение в переводе. Не пропускай и не добавляй смысловые фрагменты.
+Сохраняй исходную структуру текста и порядок предложений.
+Не добавляй вступления или заключения.
+Не делай текст более «эпичным», «красивым» или эмоциональным, чем оригинал.
+Переводи только то, что написано в исходном тексте.
+Особые правила:
+Все числа, даты, размеры, цены, количество и порядковые номера записывай только словами на языке перевода, без арабских цифр.
+Не используй цифры вида 1, 2, 3, 100, 500 и т.д.
+Имена собственные и названия мест передавай в принятой форме языка перевода.
+Термины переводи точно по смыслу.
+Формат ответа:
+Только перевод.
+Не добавляй комментарии, пояснения, примечания, анализ или сообщения о выполненной работе.
+Мой текст:`;
+  }
+
+  return `Я хочу, чтобы ты перевёл сценарий на ${language.promptName} ЯЗЫК, без транскрипции подходящий для дикторской озвучки. Перевод должен звучать просто, понятно и естественно для носителей языка. Можно немного менять слова и выражения, но не сильно, и только если это помогает сделать текст более лаконичным и правильным, но важно сохранить общий смысл.
+Только перевод без комментария. Обязательное условие: все цифры и числа (включая даты, цены, количество и порядковые номера) записывай исключительно прописью (словами на языке перевода), без использования арабских цифр.
+
+Мой текст:`;
 }
 
 function parseLanguages(inputText) {
@@ -280,6 +324,28 @@ async function waitForGeminiInput(page, rl, geminiAuthUser) {
     await rl.question('Сделай это в открытом браузере, потом нажми Enter в терминале...');
     await getGeminiInput(page, 60000);
   }
+}
+
+async function startGeminiChatForLanguage(page, language, rl, geminiAuthUser, startPartNumber) {
+  const newChatUrl = buildGeminiUrl(geminiAuthUser);
+  geminiChatUrls.delete(page);
+
+  const suffix = startPartNumber ? ` для части ${startPartNumber}` : '';
+  console.log(`Открываю новый чат Gemini${suffix}...`);
+  console.log(`Аккаунт Gemini: ${newChatUrl}`);
+
+  await page.goto(newChatUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+  try {
+    await getGeminiInput(page, 20000);
+  } catch (err) {
+    console.log('\nНе вижу поле ввода Gemini. Возможно, нужно войти в аккаунт или принять стартовые окна.');
+    await rl.question('Сделай это в открытом браузере, потом нажми Enter в терминале...');
+    await getGeminiInput(page, 60000);
+  }
+
+  console.log('Отправляю основной промт...');
+  await sendGeminiMessage(page, buildPrompt(language), rl);
 }
 
 async function getGeminiInput(page, timeout = 30000) {
@@ -472,6 +538,7 @@ async function submitGeminiMessage(page) {
 
 async function sendGeminiTextOnce(page, text) {
   await waitBeforeGeminiRequest(page);
+  await waitUntilGeminiReadyForNextMessage(page);
   await focusGeminiComposer(page);
   await pasteOrTypeText(page, text);
   await page.waitForTimeout(700);
@@ -504,21 +571,33 @@ async function waitForGeminiAnswer(page, before, rl) {
   const started = Date.now();
   const maxWaitMs = 8 * 60 * 1000;
   let sawNewResponse = false;
+  let loggedResponseStart = false;
 
   while (Date.now() - started < maxWaitMs) {
     const responses = await getGeminiResponses(page);
     const candidate = responses[responses.length - 1] || '';
+    const normalizedCandidate = normalizeText(candidate);
+    const hasNewResponse = normalizedCandidate && (
+      responses.length > before.count ||
+      normalizedCandidate !== before.last
+    );
 
-    if (responses.length > before.length && candidate.trim()) {
+    if (hasNewResponse) {
       sawNewResponse = true;
+      if (!loggedResponseStart) {
+        console.log('Gemini начал отвечать, жду завершения...');
+        loggedResponseStart = true;
+      }
 
       if (candidate === last) stableRounds += 1;
       else stableRounds = 0;
 
       last = candidate;
 
-      // Несколько одинаковых чтений подряд — ответ, скорее всего, закончен.
-      if (stableRounds >= 3) return { status: 'ok', text: cleanGeminiAnswer(candidate) };
+      if (stableRounds >= GEMINI_STABLE_ROUNDS && await waitUntilGeminiNotGenerating(page)) {
+        return { status: 'ok', text: cleanGeminiAnswer(candidate) };
+      }
+
     } else if (!sawNewResponse && Date.now() - started >= GEMINI_NO_RESPONSE_RETRY_MS) {
       return { status: 'no-response', text: '' };
     }
@@ -537,8 +616,9 @@ async function waitForGeminiAnswer(page, before, rl) {
 
 async function sendGeminiMessage(page, text, rl) {
   for (let attempt = 1; attempt <= GEMINI_MAX_SEND_ATTEMPTS; attempt++) {
-    const before = await getGeminiResponses(page);
+    const before = await getGeminiResponseSnapshot(page);
 
+    console.log(`Отправляю в Gemini, попытка ${attempt}/${GEMINI_MAX_SEND_ATTEMPTS}...`);
     await sendGeminiTextOnce(page, text);
 
     const result = await waitForGeminiAnswer(page, before, rl);
@@ -586,6 +666,75 @@ async function getGeminiResponses(page) {
   });
 }
 
+async function getGeminiResponseSnapshot(page) {
+  const responses = await getGeminiResponses(page);
+  return {
+    count: responses.length,
+    last: normalizeText(responses[responses.length - 1] || '')
+  };
+}
+
+async function waitUntilGeminiReadyForNextMessage(page, timeout = 120000) {
+  const started = Date.now();
+
+  while (Date.now() - started < timeout) {
+    await getGeminiInput(page, 3000).catch(() => null);
+    if (await waitUntilGeminiNotGenerating(page)) return;
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error('Gemini всё ещё генерирует ответ. Не отправляю следующий текст, чтобы не сломать очередь.');
+}
+
+async function waitUntilGeminiNotGenerating(page) {
+  const stopSelectors = [
+    'button[aria-label*="Stop" i]',
+    'button[aria-label*="Останов" i]',
+    'button[aria-label*="Cancel" i]',
+    'button[aria-label*="Прекрат" i]',
+    'button[title*="Stop" i]',
+    'button[title*="Останов" i]',
+    'button[data-testid*="stop" i]'
+  ];
+
+  const busySelectors = [
+    '[aria-busy="true"]',
+    '[role="progressbar"]',
+    'mat-progress-spinner',
+    'mat-spinner'
+  ];
+
+  for (let i = 0; i < 5; i++) {
+    const isGenerating = await page.evaluate(({ stopSelectors, busySelectors }) => {
+      const isVisible = el => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+
+      for (const selector of stopSelectors) {
+        for (const button of document.querySelectorAll(selector)) {
+          const disabled = button.disabled || button.getAttribute('aria-disabled') === 'true';
+          if (isVisible(button) && !disabled) return true;
+        }
+      }
+
+      for (const selector of busySelectors) {
+        for (const el of document.querySelectorAll(selector)) {
+          if (isVisible(el)) return true;
+        }
+      }
+
+      return false;
+    }, { stopSelectors, busySelectors }).catch(() => false);
+
+    if (isGenerating) return false;
+    await page.waitForTimeout(400);
+  }
+
+  return true;
+}
+
 function cleanGeminiAnswer(text) {
   let out = normalizeText(text)
     .replace(/^```[a-zа-яё-]*\s*/i, '')
@@ -620,7 +769,7 @@ function buildTranslatedDocument(parts, translatedParts) {
   const blocks = [];
 
   for (let i = 0; i < parts.length; i++) {
-    const translation = normalizeText(translatedParts[i]);
+    const translation = cleanTranslatedText(translatedParts[i]);
     blocks.push(`${parts[i].number} ${parts[i].declaredCount}/${countChars(translation)}\n${translation}`);
   }
 
@@ -811,22 +960,25 @@ async function main() {
       console.log(`\n=== ${language.no}-${language.label}: старт ===`);
 
       const geminiPage = await context.newPage();
-      await waitForGeminiInput(geminiPage, rl, geminiAuthUser);
-      await clickGeminiNewChat(geminiPage);
-
-      console.log('Отправляю основной промт...');
-      await sendGeminiMessage(geminiPage, buildPrompt(language), rl);
+      await startGeminiChatForLanguage(geminiPage, language, rl, geminiAuthUser, parts[0]?.number);
 
       const translatedParts = [];
 
-      for (const part of parts) {
+      for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+        const part = parts[partIndex];
+
+        if (partIndex > 0 && partIndex % GEMINI_PARTS_PER_CHAT === 0) {
+          await startGeminiChatForLanguage(geminiPage, language, rl, geminiAuthUser, part.number);
+        }
+
         console.log(`Перевожу часть ${part.number}/${parts.length}...`);
         const translated = await sendGeminiMessage(geminiPage, part.text, rl);
-        translatedParts.push(translated);
-        console.log(`Готово: ${countChars(translated)} символов`);
+        const cleanedTranslated = cleanTranslatedText(translated);
+        translatedParts.push(cleanedTranslated);
+        console.log(`Готово: ${countChars(cleanedTranslated)} символов`);
       }
 
-      const geminiChatUrl = geminiPage.url();
+      const geminiChatUrl = rememberGeminiChatUrl(geminiPage) || geminiPage.url();
       const mainText = buildTranslatedDocument(parts, translatedParts);
       const finalText = `${mainText}\n\n\f\n${geminiChatUrl}\n`;
 

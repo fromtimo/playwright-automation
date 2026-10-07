@@ -9,7 +9,8 @@
     "gemini": "node translator-gemini-web.js",
     "english": "node translator-chatgpt-english.js",
     "count": "node count-source-chars.js",
-    "check": "node --check translator-gemini-web.js && node --check translator-chatgpt-english.js && node --check count-source-chars.js"
+    "short-counts": "node shorten-counts.js",
+    "check": "node --check translator-gemini-web.js && node --check translator-chatgpt-english.js && node --check count-source-chars.js && node --check shorten-counts.js"
   },
   "dependencies": {
     "playwright": "1.60.0-alpha-1778075025000"
